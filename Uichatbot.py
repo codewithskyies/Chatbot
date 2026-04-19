@@ -1,61 +1,72 @@
 import streamlit as st
 from dotenv import load_dotenv
+from langchain_core.prompts import ChatPromptTemplate
+from pydantic import BaseModel
+from typing import List, Optional
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_mistralai import ChatMistralAI
+
+# -------------------- Setup --------------------
 load_dotenv()
 
-from langchain_mistralai import ChatMistralAI
-from langchain_core.messages import AIMessage, SystemMessage, HumanMessage
+@st.cache_resource
+def get_model():
+    return ChatMistralAI(model="mistral-small-2506")
 
-# Initialize model
-model = ChatMistralAI(model="mistral-small-2506", temperature=0.9)
+model = get_model()
 
-st.set_page_config(page_title="AI Chatbot", page_icon="🤖")
+# -------------------- Schema --------------------
+class Movie(BaseModel):
+    title: str
+    release_year: Optional[int]
+    genre: List[str]
+    director: Optional[str]
+    cast: List[str]
+    rating: Optional[float]
+    summary: str
 
-st.title("🤖 AI Chatbot")
+parser = PydanticOutputParser(pydantic_object=Movie)
 
-# Mode selection
-mode_option = st.selectbox(
-    "Choose your AI mode",
-    ["Angry", "Funny", "Sad", "AI"]
-)
 
-# Mode logic (same as your CLI code)
-if mode_option == "Angry":
-    mode = "You are an angry AI agent. You respond aggressively and impatiently."
-elif mode_option == "Funny":
-    mode = "You are a very funny AI agent. You respond with humor and jokes."
-elif mode_option == "Sad":
-    mode = "You are a very sad AI agent. You respond in a depressed and emotional tone."
-else:
-    mode = "You are a helpful and intelligent AI assistant. You respond clearly and helpfully."
+prompt = ChatPromptTemplate.from_messages([
+    ("system", """
+Extract movie information from the paragraph.
+{format_instructions}
+"""),
+    ("human", "{paragraph}")
+])
 
-# Initialize messages (only once)
-if "messages" not in st.session_state:
-    st.session_state.messages = [SystemMessage(content=mode)]
+# -------------------- UI --------------------
+st.set_page_config(page_title="🎬 Movie Info Extractor", layout="centered")
 
-# Show chat history
-for msg in st.session_state.messages:
-    if isinstance(msg, HumanMessage):
-        with st.chat_message("user"):
-            st.write(msg.content)
-    elif isinstance(msg, AIMessage):
-        with st.chat_message("assistant"):
-            st.write(msg.content)
+st.title("🎬 Movie Information Extractor")
+st.write("Paste any movie description and AI will convert it into structured data.")
 
-# Input box
-user_input = st.chat_input("Type your message...")
+paragraph = st.text_area("Enter Movie Paragraph", height=200)
 
-if user_input:
-    # Add user message
-    st.session_state.messages.append(HumanMessage(content=user_input))
+if st.button("Extract Data"):
+    if not paragraph.strip():
+        st.warning("Please enter a paragraph first.")
+    else:
+        with st.spinner("Analyzing movie..."):
+            try:
+                final_prompt = prompt.invoke({
+                    "paragraph": paragraph,
+                    "format_instructions": parser.get_format_instructions()
+                })
 
-    with st.chat_message("user"):
-        st.write(user_input)
+                response = model.invoke(final_prompt)
 
-    # Get AI response
-    response = model.invoke(st.session_state.messages)
+                st.subheader("Raw Model Output")
+                st.code(response.content, language="json")
 
-    # Add AI response
-    st.session_state.messages.append(AIMessage(content=response.content))
+                movie_data = parser.parse(response.content)
 
-    with st.chat_message("assistant"):
-        st.write(response.content)
+                st.subheader("Structured Output")
+                st.json(movie_data.dict())
+
+                st.success("Extraction Completed Successfully!")
+
+            except Exception as e:
+                st.error("Failed to parse response. Model did not follow schema.")
+                st.exception(e)
